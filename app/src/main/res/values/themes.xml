@@ -1,0 +1,6 @@
+<resources>
+    <style name="Theme.Dashcam" parent="Theme.MaterialComponents.DayNight.NoActionBar">
+        <item name="colorPrimary">#FF6B35</item>
+        <item name="android:windowBackground">#0E1116</item>
+    </style>
+</resources>
