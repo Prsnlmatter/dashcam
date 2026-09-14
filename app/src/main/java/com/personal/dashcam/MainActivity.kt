@@ -1,9 +1,11 @@
 package com.personal.dashcam
 
 import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.widget.ArrayAdapter
@@ -12,7 +14,6 @@ import android.widget.ListView
 import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
-import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import java.io.File
@@ -22,6 +23,10 @@ class MainActivity : AppCompatActivity() {
     private lateinit var statusText: TextView
     private lateinit var startStopButton: Button
     private lateinit var clipsListView: ListView
+
+    // True while we've asked the service to start/stop but haven't heard
+    // back yet - button stays disabled during this window to avoid double-taps.
+    private var waitingForConfirmation = false
 
     private val requiredPermissions: Array<String>
         get() {
@@ -42,6 +47,18 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    // Receives the actual state (recording started / stopped / failed) from the service.
+    private val stateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            waitingForConfirmation = false
+            val error = intent?.getStringExtra(DashcamService.EXTRA_ERROR)
+            if (error != null) {
+                Toast.makeText(this@MainActivity, error, Toast.LENGTH_LONG).show()
+            }
+            refreshUi()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
@@ -51,6 +68,8 @@ class MainActivity : AppCompatActivity() {
         clipsListView = findViewById(R.id.clipsListView)
 
         startStopButton.setOnClickListener {
+            if (waitingForConfirmation) return@setOnClickListener // ignore taps mid-transition
+
             if (DashcamService.isRecording) {
                 stopRecordingService()
             } else {
@@ -70,8 +89,29 @@ class MainActivity : AppCompatActivity() {
         refreshUi()
     }
 
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(DashcamService.ACTION_STATE_CHANGED)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(stateReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("UnspecifiedRegisterReceiverFlag")
+            registerReceiver(stateReceiver, filter)
+        }
+    }
+
+    override fun onStop() {
+        super.onStop()
+        try {
+            unregisterReceiver(stateReceiver)
+        } catch (_: Exception) {}
+    }
+
     override fun onResume() {
         super.onResume()
+        // In case state changed while this screen wasn't visible at all
+        // (e.g. app was fully closed and reopened), sync immediately.
+        waitingForConfirmation = false
         refreshUi()
     }
 
@@ -87,23 +127,43 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startRecordingService() {
+        waitingForConfirmation = true
+        refreshUi() // shows "Starting..." immediately, button disabled
         val intent = Intent(this, DashcamService::class.java).apply { action = DashcamService.ACTION_START }
         ContextCompat.startForegroundService(this, intent)
-        Toast.makeText(this, "Recording started - minimize and open Maps freely", Toast.LENGTH_LONG).show()
-        refreshUi()
     }
 
     private fun stopRecordingService() {
+        waitingForConfirmation = true
+        refreshUi() // shows "Stopping..." immediately, button disabled
         val intent = Intent(this, DashcamService::class.java).apply { action = DashcamService.ACTION_STOP }
         startService(intent)
-        Toast.makeText(this, "Recording stopped", Toast.LENGTH_SHORT).show()
-        refreshUi()
     }
 
     private fun refreshUi() {
         val recording = DashcamService.isRecording
-        statusText.text = if (recording) "● Recording" else "Not recording"
-        startStopButton.text = if (recording) "Stop Recording" else "Start Recording"
+
+        startStopButton.isEnabled = !waitingForConfirmation
+
+        when {
+            waitingForConfirmation && !recording -> {
+                statusText.text = "Starting..."
+                startStopButton.text = "Starting..."
+            }
+            waitingForConfirmation && recording -> {
+                statusText.text = "Stopping..."
+                startStopButton.text = "Stopping..."
+            }
+            recording -> {
+                statusText.text = "\u25CF Recording"
+                startStopButton.text = "Stop Recording"
+            }
+            else -> {
+                statusText.text = "Not recording"
+                startStopButton.text = "Start Recording"
+            }
+        }
+
         loadClipsList()
     }
 

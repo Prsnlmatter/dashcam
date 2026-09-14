@@ -41,6 +41,9 @@ class DashcamService : Service() {
         private const val TAG = "DashcamService"
         const val ACTION_START = "com.personal.dashcam.action.START"
         const val ACTION_STOP = "com.personal.dashcam.action.STOP"
+        const val ACTION_STATE_CHANGED = "com.personal.dashcam.action.STATE_CHANGED"
+        const val EXTRA_RECORDING = "recording"
+        const val EXTRA_ERROR = "error"
         const val NOTIFICATION_CHANNEL_ID = "dashcam_channel"
         const val NOTIFICATION_ID = 1001
 
@@ -97,6 +100,7 @@ class DashcamService : Service() {
 
     override fun onDestroy() {
         stopEverything()
+        broadcastState(false)
         backgroundThread.quitSafely()
         super.onDestroy()
     }
@@ -136,11 +140,16 @@ class DashcamService : Service() {
                     Log.e(TAG, "Camera error: $error")
                     device.close()
                     cameraDevice = null
-                    uiHandler.post { updateNotification("Camera error - stopped") }
+                    isRecording = false
+                    uiHandler.post {
+                        updateNotification("Camera error - stopped")
+                        broadcastState(false, "Camera error ($error)")
+                    }
                 }
             }, backgroundHandler)
         } catch (e: SecurityException) {
             Log.e(TAG, "Camera permission missing", e)
+            uiHandler.post { broadcastState(false, "Camera permission missing") }
             stopSelf()
         }
     }
@@ -219,15 +228,20 @@ class DashcamService : Service() {
                         session.setRepeatingRequest(requestBuilder.build(), null, backgroundHandler)
                         recorder.start()
                         isRecording = true
-                        uiHandler.post { updateNotification("Recording...") }
+                        uiHandler.post {
+                            updateNotification("Recording...")
+                            broadcastState(true)
+                        }
                         scheduleClipSwitch()
                     } catch (e: Exception) {
                         Log.e(TAG, "Failed to start recording", e)
+                        uiHandler.post { broadcastState(false, "Failed to start recording") }
                     }
                 }
 
                 override fun onConfigureFailed(session: CameraCaptureSession) {
                     Log.e(TAG, "Capture session config failed")
+                    uiHandler.post { broadcastState(false, "Camera setup failed") }
                 }
             },
             backgroundHandler
@@ -261,6 +275,7 @@ class DashcamService : Service() {
 
     private fun stopRecordingAndService() {
         stopEverything()
+        broadcastState(false)
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
@@ -313,17 +328,27 @@ class DashcamService : Service() {
         )
 
         return NotificationCompat.Builder(this, NOTIFICATION_CHANNEL_ID)
-            .setContentTitle("Dashcam")
-            .setContentText(text)
-            .setSmallIcon(android.R.drawable.ic_menu_camera)
+            .setContentTitle("I don't quit")
+            .setSmallIcon(R.drawable.ic_blank)
             .setOngoing(true)
             .setContentIntent(openPendingIntent)
-            .addAction(android.R.drawable.ic_media_pause, "Stop", stopPendingIntent)
+            .addAction(0, "Stop", stopPendingIntent)
             .build()
     }
 
     private fun updateNotification(text: String) {
         val manager = getSystemService(NotificationManager::class.java)
         manager.notify(NOTIFICATION_ID, buildNotification(text))
+    }
+
+    // ---------- State broadcast (keeps MainActivity's button in sync) ----------
+
+    private fun broadcastState(recording: Boolean, error: String? = null) {
+        val intent = Intent(ACTION_STATE_CHANGED).apply {
+            setPackage(packageName)
+            putExtra(EXTRA_RECORDING, recording)
+            error?.let { putExtra(EXTRA_ERROR, it) }
+        }
+        sendBroadcast(intent)
     }
 }
